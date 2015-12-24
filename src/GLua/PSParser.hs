@@ -16,7 +16,7 @@ type AParser = Parsec [MToken] ()
 
 -- | Execute a parser
 execAParser :: SourceName -> AParser a -> [MToken] -> Either ParseError a
-execAParser name p mts = parse p name mts
+execAParser name p = parse p name
 
 -- | Parse a string directly
 parseFromString :: AParser a -> String -> Either ParseError a
@@ -39,7 +39,7 @@ sp2lcp pos = LineColPos (sourceLine pos) (sourceColumn pos) 0
 -- | Update a SourcePos with an MToken
 updatePosMToken :: SourcePos -> MToken -> [MToken] -> SourcePos
 updatePosMToken _ (MToken p tok) [] = incSourceColumn (lcp2sp p) (tokenSize tok)
-updatePosMToken _ _ ((MToken p _) : _) = lcp2sp p
+updatePosMToken _ _ (MToken p _ : _) = lcp2sp p
 
 -- | Match a token
 pMTok :: Token -> AParser MToken
@@ -103,25 +103,29 @@ parseStat = ALabel <$> parseLabel <|>
             parseFunction AFunc <|>
             parseFor <|>
             try (AGoto <$ pMTok (Identifier "goto") <*> pName) <|>
-            try parseDefinition <|>
+            parseDefinition <|>
             AFuncCall <$> pFunctionCall <|>
             pMTok Local *>
-                (try parseLocalDefinition <|>
+                (parseLocalDefinition <|>
                 parseFunction ALocFunc)
 
 
 -- | Global definition
--- Note: Will not fail immediately when the statement is a function call.
+-- Note: Uses try to avoid conflicts with function calls
 parseDefinition :: AParser Stat
-parseDefinition = def <$> parseVarList <* pMTok Equals <*> parseExpressionList <?> "variable definition"
-    where
-        def :: [PrefixExp] -> [MExpr] -> Stat
-        def ps exs = Def $ zip ps (map Just exs ++ repeat Nothing)
+parseDefinition = flip (<?>) "variable definition" $ do
+    vars <- try $ do
+        vs <- parseVarList
+        pMTok Equals
+        return vs
+
+    exprs <- parseExpressionList
+
+    return $ Def (zip vars (map Just exprs ++ repeat Nothing))
 
 -- | Local definition
--- Note: Will not fail immediately when the statement is a function call.
 parseLocalDefinition :: AParser Stat
-parseLocalDefinition = def <$> parseVarList <*> option [] (pMTok Equals *> parseExpressionList) <?> "variable definition"
+parseLocalDefinition = def <$> parseVarList <*> option [] (pMTok Equals *> parseExpressionList) <?> "variable declaration"
     where
         def :: [PrefixExp] -> [MExpr] -> Stat
         def ps exs = LocDef $ zip ps (map Just exs ++ repeat Nothing)
@@ -144,13 +148,27 @@ parseIf = AIf <$ pMTok If <*> parseExpression <* pMTok Then <*>
             pMTok End <?> "if statement"
 
 parseFor :: AParser Stat
-parseFor = try parseNFor <|> parseGFor
+parseFor = parseNFor <|> parseGFor
 
 -- | Parse numeric for loop
 parseNFor :: AParser Stat
-parseNFor = ANFor <$ pMTok For <*> pName <* pMTok Equals <*> parseExpression <* pMTok Comma <*> parseExpression <*> step <* pMTok Do <*>
-                parseBlock <*
-            pMTok End <?> "numeric for loop"
+parseNFor = flip (<?>) "numeric for loop" $
+    do
+        name <- try $ do
+            pMTok For
+            name <- pName
+            pMTok Equals
+            return name
+
+        start <- parseExpression
+        pMTok Comma
+        to <- parseExpression
+        st <- step
+        pMTok Do
+        blk <- parseBlock
+        pMTok End
+
+        return $ ANFor name start to st blk
     where
         step :: AParser MExpr
         step = pMTok Comma *> parseExpression <|> MExpr <$> pPos <*> return (ANumber "1")
@@ -287,8 +305,8 @@ lvl8 = [(Power, APower)]
 
 -- | Parse chains of binary and unary operators
 parseExpression :: AParser MExpr
-parseExpression = (samePrioL lvl1 $
-                   samePrioL lvl2 $
+parseExpression =  samePrioL lvl1
+                  (samePrioL lvl2 $
                    samePrioL lvl3 $
                    samePrioR lvl4 $
                    samePrioL lvl5 $
@@ -352,10 +370,23 @@ parseTableConstructor = pMTok LCurly *> parseFieldList <* pMTok RCurly <?> "tabl
 parseFieldList :: AParser [Field]
 parseFieldList = sepEndBy parseField parseFieldSep <* many parseFieldSep
 
+-- | Parse a named field (e.g. {named = field})
+-- Contains try to avoid conflict with unnamed fields
+parseNamedField :: AParser Field
+parseNamedField = do
+    name <- try $ do
+        n <- pName
+        pMTok Equals
+        return n
+
+    expr <- parseExpression
+
+    return $ NamedField name expr
+
 -- | A field in a table
 parseField :: AParser Field
 parseField = ExprField <$ pMTok LSquare <*> parseExpression <* pMTok RSquare <* pMTok Equals <*> parseExpression <|>
-             try (NamedField <$> pName <* pMTok Equals <*> parseExpression) <|>
+             parseNamedField <|>
              UnnamedField <$> parseExpression <?> "field"
 
 -- | Field separator
