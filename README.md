@@ -1,10 +1,11 @@
 GLuaParser
 ==========
 
-Warning! This repository is out of date! The latest version of the lexer and parser are included as a library in the following repository:
+# Warning! 
+This repository is out of date! The latest version of the lexer and parser are included as a library in the following repository:
 https://github.com/FPtje/GLuaFixer
 
-==========
+-------
 
 WIP Lexer/Parser for Garry's mod's variant of Lua.
 
